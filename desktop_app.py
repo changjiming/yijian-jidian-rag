@@ -870,14 +870,14 @@ class ContractRAGApp:
         optimized_question = question
         
         if is_smoke_detector and not is_module:
-            # 烟感问题：强调探测器，排除模块
-            optimized_question = f"{question} 探测器 烟感 型号"
+            # 烟感问题：强调SIGA系列探测器，排除SIGI模块
+            optimized_question = f"{question} signature探测器 SIGA系列 不含模块"
         elif is_module and not is_smoke_detector:
-            # 模块问题：强调模块
-            optimized_question = f"{question} 模块 型号"
+            # 模块问题：强调模块SIGI系列
+            optimized_question = f"{question} 模块型号 SIGI系列 CT2 CC1"
         elif is_system_capacity:
-            # 系统容量问题：强调系统整体容量
-            optimized_question = f"{question} 系统整体容量 EST3 网络节点"
+            # 系统容量问题：强调系统整体容量的特征关键词
+            optimized_question = f"{question} EST3 网络节点 容量 最多支持 64个节点 160000"
         
         return optimized_question
     
@@ -918,14 +918,39 @@ class ContractRAGApp:
                     keep = False
             
             elif is_system_capacity:
-                # 系统容量问题：优先选择包含"系统"、"EST3"、"网络节点"等关键词的内容
-                has_system_keywords = any(keyword in content for keyword in ['系统', 'est3', '网络节点', '网络容量'])
-                if has_system_keywords:
-                    # 系统容量相关内容优先
-                    keep = True
+                # 系统容量问题：只保留系统整体容量相关，排除单个设备/回路容量
+                # 系统容量的特征词
+                has_system_capacity = any(keyword in content for keyword in 
+                    ['网络节点', '最多64个', '160000', '160,000', '系统容量', '整体容量'])
+                
+                # 单个模块/回路容量的特征词（要排除的）
+                has_loop_capacity = any(keyword in content for keyword in 
+                    ['3-ssdc', '3-sddc', '125探测器', '125模块', '回路容量'])
+                
+                # 策略：
+                # 1. 如果有系统容量特征词 → 优先保留
+                # 2. 如果只有回路容量特征词 → 排除
+                # 3. 其他情况 → 保留，但会优先有系统特征词的
+                if has_loop_capacity and not has_system_capacity:
+                    keep = False
             
             if keep:
-                filtered_docs.append(doc)
+                doc_obj = doc
+                doc_obj['_has_system_capacity'] = False
+                if is_system_capacity:
+                    # 标记是否有系统容量特征词，用于后续排序
+                    doc_obj['_has_system_capacity'] = any(keyword in content for keyword in 
+                        ['网络节点', '最多64个', '160000', '160,000', '系统容量', '整体容量'])
+                filtered_docs.append(doc_obj)
+        
+        # 如果是系统容量问题，对结果进行重排序：有系统特征词的排前面
+        if is_system_capacity and filtered_docs:
+            filtered_docs.sort(key=lambda d: (0 if d.get('_has_system_capacity', False) else 1))
+            self._log(f"[DEBUG] 排序后文档：", "INFO")
+            for i, doc in enumerate(filtered_docs):
+                page = doc.get('metadata', {}).get('page', 'unknown')
+                is_sys = doc.get('_has_system_capacity', False)
+                self._log(f"[DEBUG]   文档{i+1} (页{page}) - 系统容量: {is_sys}", "INFO")
         
         # 如果过滤后没有结果，保留原始结果
         if not filtered_docs:
@@ -975,11 +1000,20 @@ class ContractRAGApp:
             
             # 问题意图分析 - 优化检索
             optimized_question = self._analyze_and_optimize_question(question)
+            self._log(f"[DEBUG] 原始问题: {question} → 优化后: {optimized_question}", "INFO")
             
-            docs = vectorstore.enhanced_similarity_search(optimized_question, k=4)
+            docs = vectorstore.enhanced_similarity_search(optimized_question, k=5)
+            
+            # 调试：打印检索到的文档页码和内容预览
+            self._log(f"[DEBUG] 初次检索到 {len(docs)} 个文档", "INFO")
+            for i, doc in enumerate(docs):
+                page = doc.get('metadata', {}).get('page', 'unknown')
+                content = doc.get('page_content', '')[:120]
+                self._log(f"[DEBUG] 文档{i+1} (页{page}): {content}...", "INFO")
             
             # 检索结果验证和过滤
             docs = self._filter_and_verify_docs(docs, question)
+            self._log(f"[DEBUG] 过滤后剩余 {len(docs)} 个文档", "INFO")
             
             context_parts = []
             for i, doc in enumerate(docs):
