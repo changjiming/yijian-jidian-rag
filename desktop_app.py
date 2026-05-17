@@ -854,6 +854,85 @@ class ContractRAGApp:
         
         threading.Thread(target=_ask, daemon=True).start()
     
+    def _analyze_and_optimize_question(self, question):
+        """
+        分析问题意图并优化搜索关键词
+        """
+        question_lower = question.lower()
+        
+        # 问题类型识别
+        is_smoke_detector = any(keyword in question_lower for keyword in ['烟感', '烟探测器', '探测器型号', '探测器'])
+        is_module = any(keyword in question_lower for keyword in ['模块', '模块型号'])
+        is_capacity = any(keyword in question_lower for keyword in ['容量', '系统容量', '最大容量'])
+        is_system_capacity = is_capacity and any(keyword in question_lower for keyword in ['系统', 'est3', '整体'])
+        
+        # 优化搜索关键词
+        optimized_question = question
+        
+        if is_smoke_detector and not is_module:
+            # 烟感问题：强调探测器，排除模块
+            optimized_question = f"{question} 探测器 烟感 型号"
+        elif is_module and not is_smoke_detector:
+            # 模块问题：强调模块
+            optimized_question = f"{question} 模块 型号"
+        elif is_system_capacity:
+            # 系统容量问题：强调系统整体容量
+            optimized_question = f"{question} 系统整体容量 EST3 网络节点"
+        
+        return optimized_question
+    
+    def _filter_and_verify_docs(self, docs, question):
+        """
+        过滤和验证检索结果，提高相关性
+        """
+        if not docs:
+            return docs
+        
+        question_lower = question.lower()
+        
+        # 判断问题类型
+        is_smoke_detector = any(keyword in question_lower for keyword in ['烟感', '烟探测器', '探测器型号', '探测器'])
+        is_module = any(keyword in question_lower for keyword in ['模块', '模块型号'])
+        is_capacity = any(keyword in question_lower for keyword in ['容量', '系统容量', '最大容量'])
+        is_system_capacity = is_capacity and any(keyword in question_lower for keyword in ['系统', 'est3', '整体'])
+        
+        filtered_docs = []
+        
+        for doc in docs:
+            content = doc.get('page_content', '').lower()
+            keep = True
+            
+            # 根据问题类型过滤
+            if is_smoke_detector and not is_module:
+                # 烟感问题：排除只包含模块型号的内容
+                has_smoke_detector = any(keyword in content for keyword in ['探测器', '烟感'])
+                has_only_module = any(keyword in content for keyword in ['模块', '模块型号']) and not has_smoke_detector
+                if has_only_module:
+                    keep = False
+            
+            elif is_module and not is_smoke_detector:
+                # 模块问题：排除只包含探测器型号的内容
+                has_module = any(keyword in content for keyword in ['模块', '模块型号'])
+                has_only_smoke = any(keyword in content for keyword in ['探测器', '烟感']) and not has_module
+                if has_only_smoke:
+                    keep = False
+            
+            elif is_system_capacity:
+                # 系统容量问题：优先选择包含"系统"、"EST3"、"网络节点"等关键词的内容
+                has_system_keywords = any(keyword in content for keyword in ['系统', 'est3', '网络节点', '网络容量'])
+                if has_system_keywords:
+                    # 系统容量相关内容优先
+                    keep = True
+            
+            if keep:
+                filtered_docs.append(doc)
+        
+        # 如果过滤后没有结果，保留原始结果
+        if not filtered_docs:
+            return docs
+        
+        return filtered_docs[:3]  # 保留前3个最相关的
+    
     def _real_ask(self, question, file_path):
         if not HAS_RAG:
             return "⚠️ RAG依赖未安装！请先运行: pip install -r requirements.txt"
@@ -894,7 +973,13 @@ class ContractRAGApp:
                     batch_metadatas = [c.metadata for c in batch]
                     vectorstore.add_texts(batch_texts, batch_metadatas)
             
-            docs = vectorstore.enhanced_similarity_search(question, k=3)
+            # 问题意图分析 - 优化检索
+            optimized_question = self._analyze_and_optimize_question(question)
+            
+            docs = vectorstore.enhanced_similarity_search(optimized_question, k=4)
+            
+            # 检索结果验证和过滤
+            docs = self._filter_and_verify_docs(docs, question)
             
             context_parts = []
             for i, doc in enumerate(docs):
@@ -913,6 +998,11 @@ class ContractRAGApp:
 2. 如果教材中没有相关内容，就直接说明"教材中没有找到相关内容"
 3. 必须明确注明答案来自教材的第几页
 4. 回答格式要清晰美观
+
+【分类验证要求】
+- 如果问题涉及设备型号：仔细区分探测器/烟感型号 vs 模块/其他设备型号，只回答用户明确询问的那种类型
+- 如果问题涉及容量：明确区分系统整体容量 vs 单个设备容量 vs 回路容量
+- 如果搜索结果中包含多种类型的信息，只保留与问题直接相关的部分
 
 参考内容:
 {context}
