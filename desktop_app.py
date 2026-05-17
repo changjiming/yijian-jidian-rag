@@ -865,23 +865,19 @@ class ContractRAGApp:
         is_module = any(keyword in question_lower for keyword in ['模块', '模块型号'])
         is_capacity = any(keyword in question_lower for keyword in ['容量', '系统容量', '最大容量'])
         is_system_capacity = is_capacity and any(keyword in question_lower for keyword in ['系统', 'est3', '整体'])
-        is_classification = any(keyword in question_lower for keyword in ['分类', '种类', '类型', '分为'])
         
         # 优化搜索关键词
         optimized_question = question
         
         if is_smoke_detector and not is_module:
-            # 烟感问题：强调SIGA系列探测器，排除SIGI模块
-            optimized_question = f"{question} signature探测器 SIGA系列 不含模块"
+            # 烟感问题：强调探测器，排除模块
+            optimized_question = f"{question} 探测器 烟感 型号"
         elif is_module and not is_smoke_detector:
-            # 模块问题：强调模块SIGI系列
-            optimized_question = f"{question} 模块型号 SIGI系列 CT2 CC1"
+            # 模块问题：强调模块
+            optimized_question = f"{question} 模块 型号"
         elif is_system_capacity:
             # 系统容量问题：强调系统整体容量
-            optimized_question = f"{question} 系统整体容量 EST3 最多64节点 160000设备"
-        elif is_classification:
-            # 分类问题：添加更多相关关键词
-            optimized_question = f"{question} 分类 类型 种类 分类方法"
+            optimized_question = f"{question} 系统整体容量 EST3 网络节点"
         
         return optimized_question
     
@@ -903,57 +899,35 @@ class ContractRAGApp:
         filtered_docs = []
         
         for doc in docs:
-            content = doc.get('page_content', '')
-            content_lower = content.lower()
+            content = doc.get('page_content', '').lower()
             keep = True
             
             # 根据问题类型过滤
             if is_smoke_detector and not is_module:
-                # 烟感问题：检查是否包含模块相关型号（SIGI开头、CT2、CC1等）
-                module_signatures = ['sigi-', 'sigi.', 'sigi ', '-ct2', '-cc1', '模块型号', '模块型号：']
-                has_module_signature = any(sig in content_lower for sig in module_signatures)
-                
-                # 检查是否明确标注为探测器/烟感
-                is_detector_section = any(keyword in content_lower for keyword in ['探测器型号', '烟感型号', '探测器型号：', '烟感型号：', 'signature系列探测器'])
-                
-                # 如果包含模块签名且不是探测器章节，则排除
-                if has_module_signature and not is_detector_section:
+                # 烟感问题：排除只包含模块型号的内容
+                has_smoke_detector = any(keyword in content for keyword in ['探测器', '烟感'])
+                has_only_module = any(keyword in content for keyword in ['模块', '模块型号']) and not has_smoke_detector
+                if has_only_module:
                     keep = False
-                
-                # 如果内容主要在"模块型号"部分，也排除
-                if '模块型号' in content_lower and not is_detector_section:
-                    detector_pos = content_lower.find('探测器型号')
-                    module_pos = content_lower.find('模块型号')
-                    
-                    if detector_pos == -1 and module_pos >= 0:
-                        keep = False
             
             elif is_module and not is_smoke_detector:
-                is_module_section = any(keyword in content_lower for keyword in ['模块型号', 'sigi-', 'sigi.', '-ct2', '-cc1'])
-                
-                if not is_module_section:
+                # 模块问题：排除只包含探测器型号的内容
+                has_module = any(keyword in content for keyword in ['模块', '模块型号'])
+                has_only_smoke = any(keyword in content for keyword in ['探测器', '烟感']) and not has_module
+                if has_only_smoke:
                     keep = False
             
             elif is_system_capacity:
-                has_system_keywords = any(keyword in content_lower for keyword in ['系统容量', '系统整体容量', '最多64个', '160,000', '160000', '网络节点', '网络容量'])
-                
-                if not has_system_keywords:
-                    keep = False
+                # 系统容量问题：优先选择包含"系统"、"EST3"、"网络节点"等关键词的内容
+                has_system_keywords = any(keyword in content for keyword in ['系统', 'est3', '网络节点', '网络容量'])
+                if has_system_keywords:
+                    # 系统容量相关内容优先
+                    keep = True
             
             if keep:
                 filtered_docs.append(doc)
         
-        # 如果过滤后没有结果，尝试扩大范围重新过滤
-        if not filtered_docs:
-            # 对于烟感问题，排除明确包含模块的内容
-            if is_smoke_detector:
-                for doc in docs:
-                    content_lower = doc.get('page_content', '').lower()
-                    # 如果文档中没有"模块型号"，就保留
-                    if '模块型号' not in content_lower:
-                        filtered_docs.append(doc)
-        
-        # 如果还是没有结果，保留原始结果
+        # 如果过滤后没有结果，保留原始结果
         if not filtered_docs:
             return docs
         
@@ -1021,11 +995,9 @@ class ContractRAGApp:
 
 【重要要求】
 1. 答案必须100%基于提供的教材参考资料，不要使用任何教材以外的知识
-2. 仔细阅读所有参考资料，即使内容不完全匹配也要尽力从中提取相关信息
-3. 如果教材中有部分相关内容，请基于这些内容进行回答，不要轻易说"没有找到"
-4. 只有在完全没有任何相关信息时，才说明"教材中没有找到相关内容"
-5. 必须明确注明答案来自教材的第几页
-6. 回答格式要清晰美观
+2. 如果教材中没有相关内容，就直接说明"教材中没有找到相关内容"
+3. 必须明确注明答案来自教材的第几页
+4. 回答格式要清晰美观
 
 【分类验证要求】
 - 如果问题涉及设备型号：仔细区分探测器/烟感型号 vs 模块/其他设备型号，只回答用户明确询问的那种类型
